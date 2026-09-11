@@ -1,0 +1,1 @@
+{"target_frames": 720, "actual_frames": 720, "duration_s": 30, "fps": 24, "seams": [{"type":"internal", "clip_from":1, "clip_to":2, "ratio":35.88}, {"type":"loop", "clip_from":2, "clip_to":1, "ratio":35.88}]}

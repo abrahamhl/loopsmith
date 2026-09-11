@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-OUT="loop.mp4"; DUR=30; FPS=""; SIZE="1920x1080"; CRF=15; DRY=0; LOOP=1; MAXDROP=3; MOTION=0
+OUT="loop.mp4"; DUR=30; FPS=""; SIZE="1920x1080"; CRF=15; DRY=0; LOOP=1; MAXDROP=3; MOTION=0; JSON_OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,19 +38,25 @@ while [[ $# -gt 0 ]]; do
     --dry-run)  DRY=1; shift ;;
     --no-loop)  LOOP=0; shift ;;
     --motion-cut) MOTION=1; shift ;;
+    --json)     JSON_OUT="$2"; shift 2 ;;
     -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
-    -*)         echo "opcion desconocida: $1" >&2; exit 1 ;;
+    -*)         echo "opcion desconocida: $1" >&2; exit 2 ;;
     *)          CLIPS+=("$1"); shift ;;
   esac
 done
 
 CLIPS=("${CLIPS[@]:-}")
-[[ -z "${CLIPS[0]:-}" ]] && { echo "uso: ./loopsmith.sh [opciones] clip1.mp4 clip2.mp4 ..." >&2; exit 1; }
+[[ -z "${CLIPS[0]:-}" ]] && { echo "uso: ./loopsmith.sh [opciones] clip1.mp4 clip2.mp4 ..." >&2; exit 2; }
 NC=${#CLIPS[@]}
-for c in "${CLIPS[@]}"; do [[ -f "$c" ]] || { echo "no existe: $c" >&2; exit 1; }; done
-command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || { echo "falta ffmpeg/ffprobe" >&2; exit 1; }
+for c in "${CLIPS[@]}"; do [[ -f "$c" ]] || { echo "no existe: $c" >&2; exit 3; }; done
+FFMPEG="ffmpeg"; FFPROBE="ffprobe"
+if ! command -v ffmpeg >/dev/null && command -v ffmpeg.exe >/dev/null; then FFMPEG="ffmpeg.exe"; FFPROBE="ffprobe.exe"; fi
+command -v $FFMPEG >/dev/null && command -v $FFPROBE >/dev/null || { echo "falta ffmpeg/ffprobe" >&2; exit 3; }
+ffmpeg() { "$FFMPEG" "$@"; }
+ffprobe() { "$FFPROBE" "$@"; }
+export -f ffmpeg ffprobe
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="tmp_loopsmith_$$"; mkdir -p "$TMP"; trap 'rm -rf "$TMP"' EXIT
 OW="${SIZE%x*}"; OH="${SIZE#*x}"
 
 echo
@@ -63,9 +69,9 @@ TOTAL=0
 for i in $(seq 0 $((NC-1))); do
   c="${CLIPS[$i]}"
   read -r w h rfr < <(ffprobe -v error -select_streams v \
-      -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$c" | tr ',' ' ')
+      -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$c" | tr ',' ' ' | tr -d '\r')
   n=$(ffprobe -v error -select_streams v -count_frames \
-      -show_entries stream=nb_read_frames -of csv=p=0 "$c")
+      -show_entries stream=nb_read_frames -of csv=p=0 "$c" | tr -d '\r')
   [[ -z "$FPS" ]] && FPS=$(awk -F/ '{printf "%d", ($2?$1/$2:$1)}' <<<"$rfr")
   NF[$i]=$n; SW[$i]=$w; SH[$i]=$h; TOTAL=$((TOTAL+n))
   printf "  clip %d  %-38s %5d frames  %dx%d\n" $((i+1)) "$(basename "$c")" "$n" "$w" "$h"
@@ -79,14 +85,14 @@ printf "  disponibles %d frames | objetivo %d (%s s a %s fps) | sobran %d\n" \
 
 if (( DROP < 0 )); then
   echo; echo "  ERROR: faltan $((-DROP)) frames para llegar a ${DUR}s." >&2
-  echo "  Genera mas material o baja --duration." >&2; exit 1
+  echo "  Genera mas material o baja --duration." >&2; exit 4
 fi
 
 # Posiciones de recorte: cabeza de cada clip salvo el primero, + cola del ultimo si hay bucle.
 NPOS=$((NC-1)); (( LOOP )) && NPOS=$((NPOS+1))
 if (( DROP > NPOS*MAXDROP )); then
   echo; echo "  ERROR: hay que quitar $DROP frames y solo puedo tocar $((NPOS*MAXDROP))" >&2
-  echo "  sin deformar el material. Ajusta --duration." >&2; exit 1
+  echo "  sin deformar el material. Ajusta --duration." >&2; exit 5
 fi
 
 # ── 2. Extraccion de frontera ─────────────────────────────────────────
@@ -106,7 +112,7 @@ done
 energy() {
   ( cd "$TMP" && ffprobe -v error -f lavfi \
       -i "movie=$1.png[a];movie=$2.png[b];[a]scale=320:180[x];[b]scale=320:180[y];[x][y]blend=all_mode=difference,signalstats" \
-      -show_entries frame_tags=lavfi.signalstats.YAVG -of csv=p=0 2>/dev/null | head -1 )
+      -show_entries frame_tags=lavfi.signalstats.YAVG -of csv=p=0 2>/dev/null | head -1 | tr -d '\r' )
 }
 
 # Paso normal de referencia: media de los pasos consecutivos en la cola ($2=t)
@@ -266,6 +272,30 @@ if (( LOOP )); then
   printf "    BUCLE  %d→1    ratio %-6s %s\n" "$NC" "$r" "$(veredicto "$r")"
 fi
 
+if [[ -n "$JSON_OUT" ]]; then
+  json="{"
+  json+="\"target_frames\": $TARGET, "
+  json+="\"actual_frames\": $KEEP, "
+  json+="\"duration_s\": $DUR, "
+  json+="\"fps\": $FPS, "
+  json+="\"seams\": ["
+  comma=""
+  for j in $(seq 1 $((NC-1))); do
+    e="${EV[$((j-1))]}"; b="${SB[$j]}"
+    r=$(awk -v e="$e" -v b="$b" 'BEGIN{printf "%.2f", (b>0?e/b:0)}')
+    json+="$comma{\"type\":\"internal\", \"clip_from\":$j, \"clip_to\":$((j+1)), \"ratio\":$r}"
+    comma=", "
+  done
+  if (( LOOP )); then
+    e="${EV[$((NPOS-1))]}"; b="${SB[$NPOS]}"
+    r=$(awk -v e="$e" -v b="$b" 'BEGIN{printf "%.2f", (b>0?e/b:0)}')
+    json+="$comma{\"type\":\"loop\", \"clip_from\":$NC, \"clip_to\":1, \"ratio\":$r}"
+  fi
+  json+="]"
+  json+="}"
+  echo "$json" > "$JSON_OUT"
+fi
+
 (( DRY )) && { echo; echo "  (--dry-run: no se codifica nada)"; echo; exit 0; }
 
 # ── 5. Montaje y codificacion ─────────────────────────────────────────
@@ -307,9 +337,9 @@ ffmpeg -y -v error -stats "${IN[@]}" -filter_complex "$FC" -map "[v]" \
   -movflags +faststart -an "$OUT" 2>&1 | tail -1
 
 # ── 6. Verificacion ───────────────────────────────────────────────────
-RF=$(ffprobe -v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$OUT")
-RD=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT")
-RS=$(ffprobe -v error -select_streams v -show_entries stream=width,height -of csv=p=0 "$OUT")
+RF=$(ffprobe -v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$OUT" | tr -d '\r')
+RD=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" | tr -d '\r')
+RS=$(ffprobe -v error -select_streams v -show_entries stream=width,height -of csv=p=0 "$OUT" | tr -d '\r')
 
 echo
 echo "=================================================================="
