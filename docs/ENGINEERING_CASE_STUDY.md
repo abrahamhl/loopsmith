@@ -4,7 +4,7 @@
 Generative video models (Kling, Runway, Veo) frequently return videos with inconsistent frame counts and fractional durations. Additionally, when looping these clips or chaining them, the first and last frames often display stutters or texture recoding artifacts. LoopSmith solves this by orchestrating `ffmpeg` to trim the clips intelligently and concatenate them into a mathematically exact duration, hiding the seams either via combinatorial search of low-cost boundaries or by dropping frames during fast-motion segments.
 
 ## 2. CHANGES
-To transform this into a robust, recruiter-ready reference project:
+To transform this into a robust, production-ready tool:
 - Introduced a JSON output flag (`--json`) for machine-readable planning.
 - Added strict, meaningful exit codes (2 for usage, 3 for missing dependencies/inputs, 4 for insufficient frames, 5 for constraints limits).
 - Implemented a synthetic, deterministic test corpus generator (`tests/generate_fixtures.sh`) that uses `ffmpeg` `testsrc` instead of committing binary video files.
