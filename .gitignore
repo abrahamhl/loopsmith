@@ -5,3 +5,7 @@
 *.jpeg
 .DS_Store
 desktop.ini
+
+# local-only notes
+docs/INTERVIEW_DEFENSE.md
+docs/ISMAJAKI_CASE_STUDY_TEMPLATE.md
